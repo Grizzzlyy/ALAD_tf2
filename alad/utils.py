@@ -7,6 +7,7 @@ from keras.layers import Dense, BatchNormalization, LeakyReLU, Dropout, Flatten,
 import numpy as np
 from sklearn import metrics
 import time
+import os
 
 import data.kdd99.kdd99 as kdd
 
@@ -24,3 +25,14 @@ def batch_fill(testx, batch_size):
     new_shape = [batch_size - size] + list(testx.shape[1:])
     fill = np.ones(new_shape).astype(np.float32)
     return np.concatenate([testx[ran_from:ran_to], fill], axis=0), size
+
+def create_results_dir(dataset: str, allow_zz: bool, random_seed: int):
+    dir_path = f"results/{dataset}/alad_dzz{allow_zz}/seed_{random_seed}"
+    os.makedirs(dir_path, exist_ok=True)
+    return dir_path
+
+def plot_model(model):
+    """
+    Plot keras model
+    """
+    tf.keras.utils.plot_model(model)

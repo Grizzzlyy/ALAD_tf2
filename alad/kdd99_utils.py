@@ -1,104 +1,129 @@
+"""
+
+KDD ALAD architecture.
+
+Generator (decoder), encoder and discriminator.
+
+"""
 import tensorflow as tf
-import keras
-from keras.initializers import GlorotNormal
-from keras.layers import Dense, BatchNormalization, LeakyReLU, Dropout
+from tensorflow.keras.initializers import GlorotNormal
+from tensorflow.keras.layers import Dense, BatchNormalization, LeakyReLU, Dropout
 
-learning_rate = 1e-5
-batch_size = 50
-latent_dim = 32
-init_kernel = tf.keras.initializers.glorot_normal
+LEARNING_RATE = 1e-5
+REAL_DIM = 121
+LATENT_DIM = 32
 
-# from tensorflow.keras.layers import SpectralNormalization
-# from tensorflow.train import ExponentialMovingAverage
+class Encoder(tf.keras.Model):
+    """
+    Encoder architecture in tensorflow. Maps real data into the latent space.
+    """
 
-class Encoder(keras.Model):
-    def __init__(self, z_dim: int, do_spectral_norm: bool):
+    def __init__(self, random_seed):
         super().__init__()
-        kernel_initializer = GlorotNormal(seed=500)
+        kernel_initializer = GlorotNormal(seed=random_seed)
 
-        if do_spectral_norm:
-            self.dense1 = keras.layers.SpectralNormalization(
-                Dense(64, kernel_initializer=kernel_initializer))
-            self.leaky_relu1 = keras.layers.SpectralNormalization(
-                LeakyReLU(0.2))
-            self.dense2 = keras.layers.SpectralNormalization(
-                Dense(z_dim, kernel_initializer=kernel_initializer))
-        else:
-            self.dense1 = Dense(64, kernel_initializer=kernel_initializer)
-            self.leaky_relu1 = LeakyReLU(0.2)
-            self.dense2 = Dense(z_dim, kernel_initializer=kernel_initializer)
+        self.dense1 = Dense(64, kernel_initializer=kernel_initializer)
+        self.leaky_relu1 = LeakyReLU(0.2)
+        self.dense2 = Dense(LATENT_DIM, kernel_initializer=kernel_initializer)
+
+    def build(self, batch_size):
+        # Call on dummy data to initialize weights
+        dummy_tensor = tf.zeros((batch_size, 121))
+        self.call(dummy_tensor, training=False)
 
     def call(self, x_input, training=False):
+        """
+        Parameters
+        ----------
+        x_input : tensor
+            Data from real space
+        training : bool, optional
+            For batch norms and dropouts
+
+        Returns
+        -------
+        net : tensor
+        """
         z = self.dense1(x_input)
         z = self.leaky_relu1(z)
         return self.dense2(z)
 
 
-class Generator(keras.Model):
-    def __init__(self, x_dim: int):
+class Generator(tf.keras.Model):
+    def __init__(self, random_seed):
         super().__init__()
-        kernel_initializer = GlorotNormal(seed=500)
+        kernel_initializer = GlorotNormal(seed=random_seed)
 
         self.dense1 = Dense(64, activation="relu", kernel_initializer=kernel_initializer)
         self.dense2 = Dense(128, activation="relu", kernel_initializer=kernel_initializer)
-        self.dense3 = Dense(x_dim, kernel_initializer=kernel_initializer)
+        self.dense3 = Dense(REAL_DIM, kernel_initializer=kernel_initializer)
+
+    def build(self, batch_size):
+        # Call on dummy data to initialize weights
+        dummy_tensor = tf.zeros((batch_size, 32))
+        self.call(dummy_tensor, training=False)
 
     def call(self, z_input, training=False):
+        """
+        Parameters
+        ----------
+        z_input : tensor
+            Data from latent space
+        training : bool, optional
+            For batch norms and dropouts
+
+        Returns
+        -------
+        net : tensor
+        """
         x = self.dense1(z_input)
         x = self.dense2(x)
         return self.dense3(x)
 
 
-class DiscriminatorXZ(keras.Model):
-    def __init__(self, do_spectral_norm: bool):
+class DiscriminatorXZ(tf.keras.Model):
+    def __init__(self, random_seed):
         super().__init__()
-        kernel_initializer = GlorotNormal(seed=500)
+        kernel_initializer = GlorotNormal(seed=random_seed)
 
-        if do_spectral_norm:
-            # D(x)
-            self.Dx_dense = keras.layers.SpectralNormalization(
-                Dense(128, kernel_initializer=kernel_initializer))
-            self.Dx_batch_norm = keras.layers.SpectralNormalization(
-                BatchNormalization())
-            self.Dx_leakyRelu = keras.layers.SpectralNormalization(
-                LeakyReLU(0.2))
+        # D(x)
+        self.Dx_dense = Dense(128, kernel_initializer=kernel_initializer)
+        self.Dx_batch_norm = BatchNormalization()
+        self.Dx_leakyRelu = LeakyReLU(0.2)
 
-            # D(z)
-            self.Dz_dense = keras.layers.SpectralNormalization(
-                Dense(128, kernel_initializer=kernel_initializer))
-            self.Dz_leakyRelu = keras.layers.SpectralNormalization(
-                LeakyReLU(0.2))
-            self.Dz_dropout = keras.layers.SpectralNormalization(
-                Dropout(0.5))
+        # D(z)
+        self.Dz_dense = Dense(128, kernel_initializer=kernel_initializer)
+        self.Dz_leakyRelu = LeakyReLU(0.2)
+        self.Dz_dropout = Dropout(0.5)
 
-            # D(x,z)
-            self.Dxz_dense1 = keras.layers.SpectralNormalization(
-                Dense(128, kernel_initializer=kernel_initializer))
-            self.Dxz_leakyRelu = keras.layers.SpectralNormalization(
-                LeakyReLU(0.2))
-            self.Dxz_dropout1 = keras.layers.SpectralNormalization(
-                Dropout(0.5))
-            self.Dxz_dense2 = keras.layers.SpectralNormalization(
-                Dense(1, kernel_initializer=kernel_initializer))
+        # D(x,z)
+        self.Dxz_dense1 = Dense(128, kernel_initializer=kernel_initializer)
+        self.Dxz_leakyRelu = LeakyReLU(0.2)
+        self.Dxz_dropout1 = Dropout(0.5)
+        self.Dxz_dense2 = Dense(1, kernel_initializer=kernel_initializer)
 
-        else:
-            # D(x)
-            self.Dx_dense = Dense(128, kernel_initializer=kernel_initializer)
-            self.Dx_batch_norm = BatchNormalization()
-            self.Dx_leakyRelu = LeakyReLU(0.2)
-
-            # D(z)
-            self.Dz_dense = Dense(128, kernel_initializer=kernel_initializer)
-            self.Dz_leakyRelu = LeakyReLU(0.2)
-            self.Dz_dropout = Dropout(0.5)
-
-            # D(x,z)
-            self.Dxz_dense1 = Dense(128, kernel_initializer=kernel_initializer)
-            self.Dxz_leakyRelu = LeakyReLU(0.2)
-            self.Dxz_dropout1 = Dropout(0.5)
-            self.Dxz_dense2 = Dense(1, kernel_initializer=kernel_initializer)
+    def build(self, batch_size):
+        # Call on dummy data to initialize weights
+        dummy_tensor1 = tf.zeros((batch_size, 121))
+        dummy_tensor2 = tf.zeros((batch_size, 32))
+        self.call(dummy_tensor1, dummy_tensor2, training=False)
 
     def call(self, x_input, z_input, training=False):
+        """
+        Parameters
+        ----------
+        x_input : tensor
+            Data from real space
+        z_input : tensor
+            Data from latent space
+        training : bool, optional
+            For batch norms and dropouts
+
+        Returns
+        -------
+        (logits, y_intermediate) : (tensor, tensor)
+        """
+
         # D(x)
         x = self.Dx_dense(x_input)
         x = self.Dx_batch_norm(x, training=training)
@@ -122,27 +147,37 @@ class DiscriminatorXZ(keras.Model):
         return logits, y_intermediate
 
 
-class DiscriminatorXX(keras.Model):
-    def __init__(self, do_spectral_norm: bool):
+class DiscriminatorXX(tf.keras.Model):
+    def __init__(self, random_seed):
         super().__init__()
-        kernel_initializer = GlorotNormal(seed=500)
+        kernel_initializer = GlorotNormal(seed=random_seed)
 
-        if do_spectral_norm:
-            self.dense1 = keras.layers.SpectralNormalization(
-                Dense(128, kernel_initializer=kernel_initializer))
-            self.leaky_relu1 = keras.layers.SpectralNormalization(
-                LeakyReLU(0.2))
-            self.dropout1 = keras.layers.SpectralNormalization(
-                Dropout(0.2))
-            self.dense2 = keras.layers.SpectralNormalization(
-                Dense(1, kernel_initializer=kernel_initializer))
-        else:
-            self.dense1 = Dense(128, kernel_initializer=kernel_initializer)
-            self.leaky_relu1 = LeakyReLU(0.2)
-            self.dropout1 = Dropout(0.2)
-            self.dense2 = Dense(1, kernel_initializer=kernel_initializer)
+        self.dense1 = Dense(128, kernel_initializer=kernel_initializer)
+        self.leaky_relu1 = LeakyReLU(0.2)
+        self.dropout1 = Dropout(0.2)
+        self.dense2 = Dense(1, kernel_initializer=kernel_initializer)
+
+    def build(self, batch_size):
+        # Call on dummy data to initialize weights
+        dummy_tensor = tf.zeros((batch_size, 121))
+        self.call(dummy_tensor, dummy_tensor, training=False)
 
     def call(self, x, rec_x, training=False):
+        """
+        Parameters
+        ----------
+        x : tensor
+            Data from real space
+        rec_x : tensor
+            Recreated data (real space)
+        training : bool, optional
+            For batch norms and dropouts
+
+        Returns
+        -------
+        (logits, res_intermediate) : (tensor, tensor)
+        """
+
         res = tf.concat([x, rec_x], axis=1)
 
         res = self.dense1(res)
@@ -155,27 +190,37 @@ class DiscriminatorXX(keras.Model):
         return logits, res_intermediate
 
 
-class DiscriminatorZZ(keras.Model):
-    def __init__(self, do_spectral_norm: bool):
+class DiscriminatorZZ(tf.keras.Model):
+    def __init__(self, random_seed):
         super().__init__()
-        kernel_initializer = GlorotNormal(seed=500)
+        kernel_initializer = GlorotNormal(seed=random_seed)
 
-        if do_spectral_norm:
-            self.dense1 = keras.layers.SpectralNormalization(
-                Dense(32, kernel_initializer=kernel_initializer))
-            self.leaky_relu1 = keras.layers.SpectralNormalization(
-                LeakyReLU(0.2))
-            self.dropout1 = keras.layers.SpectralNormalization(
-                Dropout(0.2))
-            self.dense2 = keras.layers.SpectralNormalization(
-                Dense(1, kernel_initializer=kernel_initializer))
-        else:
-            self.dense1 = Dense(32, kernel_initializer=kernel_initializer)
-            self.leaky_relu1 = LeakyReLU(0.2)
-            self.dropout1 = Dropout(0.2)
-            self.dense2 = Dense(1, kernel_initializer=kernel_initializer)
+        self.dense1 = Dense(32, kernel_initializer=kernel_initializer)
+        self.leaky_relu1 = LeakyReLU(0.2)
+        self.dropout1 = Dropout(0.2)
+        self.dense2 = Dense(1, kernel_initializer=kernel_initializer)
+
+    def build(self, batch_size):
+        # Call on dummy data to initialize weights
+        dummy_tensor = tf.zeros((batch_size, 32))
+        self.call(dummy_tensor, dummy_tensor, training=False)
 
     def call(self, z, rec_z, training=False):
+        """
+        Parameters
+        ----------
+        z : tensor
+            Data from latent space
+        rec_z : tensor
+            Recreated data (latent space)
+        training : bool, optional
+            For batch norms and dropouts
+
+        Returns
+        -------
+        (logits, res_intermediate) : (tensor, tensor)
+        """
+
         res = tf.concat([z, rec_z], axis=1)
 
         res = self.dense1(res)
