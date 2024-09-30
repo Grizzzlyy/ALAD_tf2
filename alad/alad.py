@@ -12,7 +12,7 @@ from tqdm import tqdm
 import pandas as pd
 
 from alad.eval import score_ch, score_fm, score_l1, score_l2
-from alad.utils import batch_fill, create_results_dir, create_logger
+from alad.utils import batch_fill, create_results_dir, create_logger, print_parameters
 
 
 # TODO add display_parameters
@@ -24,11 +24,11 @@ from alad.utils import batch_fill, create_results_dir, create_logger
 
 
 class ALAD:
-    def __init__(self, dataset: str, random_seed: int, allow_zz: bool, batch_size: int):
+    def __init__(self, dataset_name: str, random_seed: int, allow_zz: bool, batch_size: int):
         """
         Parameters
         ----------
-        dataset : str
+        dataset_name : str
             Name of dataset, on which ALAD will be trained on
         random_seed : int
             For batch norms and dropouts
@@ -39,27 +39,31 @@ class ALAD:
         """
 
         # Module with encoder, generator, discriminators and some hyperparameters for this dataset
-        models = importlib.import_module(f"alad.{dataset}_utils")
+        models_module = importlib.import_module(f"alad.{dataset_name}_utils")
 
         # Hyperparameters
-        self.real_dim = models.REAL_DIM
-        self.latent_dim = models.LATENT_DIM
+        self.real_dim = models_module.REAL_DIM
+        self.latent_dim = models_module.LATENT_DIM
         self.allow_zz = allow_zz
         self.ema_decay = 0.999
         self.batch_size = batch_size
-        self.learning_rate = models.LEARNING_RATE
+        self.learning_rate = models_module.LEARNING_RATE
 
         # Create results directory
-        self.results_dir = create_results_dir(dataset=dataset, allow_zz=allow_zz, random_seed=random_seed)
+        self.results_dir = create_results_dir(dataset=dataset_name, allow_zz=allow_zz, random_seed=random_seed)
         # Create logger
-        self.logger = create_logger(dataset, allow_zz, random_seed)
+        self.logger = create_logger(dataset_name, allow_zz, random_seed)
+
+        # Display parameters
+        print_parameters(self.logger, **{"dataset": dataset_name, "allow_zz": allow_zz, "random_seed": random_seed,
+                                         "batch_size": batch_size})
 
         # Models
-        self.gen = models.Generator(random_seed)
-        self.enc = models.Encoder(random_seed)
-        self.dis_xz = models.DiscriminatorXZ(random_seed)
-        self.dis_xx = models.DiscriminatorXX(random_seed)
-        self.dis_zz = models.DiscriminatorZZ(random_seed)
+        self.gen = models_module.Generator(random_seed)
+        self.enc = models_module.Encoder(random_seed)
+        self.dis_xz = models_module.DiscriminatorXZ(random_seed)
+        self.dis_xx = models_module.DiscriminatorXX(random_seed)
+        self.dis_zz = models_module.DiscriminatorZZ(random_seed)
 
         # Build models
         self.gen.build(batch_size=batch_size)
@@ -132,6 +136,8 @@ class ALAD:
             self.vars_tmp = {}
 
     def train(self, trainx, epochs: int):
+        self.logger.info(f"Training epochs {0} - {epochs - 1}")
+
         # Shuffle dataset
         np.random.shuffle(trainx)
 
@@ -457,12 +463,13 @@ def run(args):
     tf.random.set_seed(args.seed)
     tf.keras.utils.set_random_seed(args.seed)
 
+    alad = ALAD(dataset_name=args.dataset_name, random_seed=args.seed, allow_zz=args.enable_dzz,
+                batch_size=args.batch_size)
+
     # Load dataset
-    dataset = importlib.import_module(f"data.{args.dataset}.{args.dataset}")
+    dataset = importlib.import_module(f"data.{args.dataset_name}.{args.dataset_name}")
     trainx, trainy = dataset.get_train()
     testx, testy = dataset.get_test()
-
-    alad = ALAD(dataset=args.dataset, random_seed=args.seed, allow_zz=args.enable_dzz, batch_size=args.batch_size)
 
     alad.train(trainx, args.epochs)
 

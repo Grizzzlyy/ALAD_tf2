@@ -50,8 +50,15 @@ def batch_fill(testx, batch_size):
     return np.concatenate([testx[ran_from:ran_to], fill], axis=0), size
 
 
-def plot_model(model):
-    """
-    Plot keras model
-    """
-    tf.keras.utils.plot_model(model)
+# def plot_model(model):
+#     """
+#     Plot keras model
+#     """
+#     tf.keras.utils.plot_model(model)
+
+def print_parameters(logger, **kwargs):
+    logger.info(f"Parameters:")
+    for key, value in kwargs.items():
+        logger.info(f"{key} : {value}")
+    logger.info(f"\n")
+
