@@ -1,9 +1,7 @@
 import tensorflow as tf
-from keras.layers import Flatten
+from tensorflow.keras.layers import Flatten
 
 
-# from tensorflow.keras.layers import SpectralNormalization
-# from tensorflow.train import ExponentialMovingAverage
 
 def score_ch(l_generator_emaxx):
     score_ch = tf.nn.sigmoid_cross_entropy_with_logits(

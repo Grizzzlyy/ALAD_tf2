@@ -1,4 +1,4 @@
 .idea
 __pycache__/
 *.pyc
-alad/__pycache__/
+results/

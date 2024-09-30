@@ -7,13 +7,13 @@ Generator (decoder), encoder and discriminator.
 """
 import tensorflow as tf
 from tensorflow.keras.initializers import GlorotNormal
-from tensorflow.keras.layers import Dense, BatchNormalization, LeakyReLU, Dropout
+from tensorflow.keras.layers import Dense, BatchNormalization, LeakyReLU, Dropout, Concatenate
 
 LEARNING_RATE = 1e-5
 REAL_DIM = 121
 LATENT_DIM = 32
 
-class Encoder(tf.keras.Model):
+class Encoder(tf.keras.Layer):
     """
     Encoder architecture in tensorflow. Maps real data into the latent space.
     """
@@ -28,7 +28,7 @@ class Encoder(tf.keras.Model):
 
     def build(self, batch_size):
         # Call on dummy data to initialize weights
-        dummy_tensor = tf.zeros((batch_size, 121))
+        dummy_tensor = tf.zeros((batch_size, REAL_DIM))
         self.call(dummy_tensor, training=False)
 
     def call(self, x_input, training=False):
@@ -49,7 +49,7 @@ class Encoder(tf.keras.Model):
         return self.dense2(z)
 
 
-class Generator(tf.keras.Model):
+class Generator(tf.keras.Layer):
     def __init__(self, random_seed):
         super().__init__()
         kernel_initializer = GlorotNormal(seed=random_seed)
@@ -60,7 +60,7 @@ class Generator(tf.keras.Model):
 
     def build(self, batch_size):
         # Call on dummy data to initialize weights
-        dummy_tensor = tf.zeros((batch_size, 32))
+        dummy_tensor = tf.zeros((batch_size, LATENT_DIM))
         self.call(dummy_tensor, training=False)
 
     def call(self, z_input, training=False):
@@ -81,7 +81,7 @@ class Generator(tf.keras.Model):
         return self.dense3(x)
 
 
-class DiscriminatorXZ(tf.keras.Model):
+class DiscriminatorXZ(tf.keras.Layer):
     def __init__(self, random_seed):
         super().__init__()
         kernel_initializer = GlorotNormal(seed=random_seed)
@@ -97,15 +97,16 @@ class DiscriminatorXZ(tf.keras.Model):
         self.Dz_dropout = Dropout(0.5)
 
         # D(x,z)
+        self.Dxz_concat = Concatenate(axis=-1)
         self.Dxz_dense1 = Dense(128, kernel_initializer=kernel_initializer)
-        self.Dxz_leakyRelu = LeakyReLU(0.2)
+        self.Dxz_leakyRelu1 = LeakyReLU(0.2)
         self.Dxz_dropout1 = Dropout(0.5)
         self.Dxz_dense2 = Dense(1, kernel_initializer=kernel_initializer)
 
     def build(self, batch_size):
         # Call on dummy data to initialize weights
-        dummy_tensor1 = tf.zeros((batch_size, 121))
-        dummy_tensor2 = tf.zeros((batch_size, 32))
+        dummy_tensor1 = tf.zeros((batch_size, REAL_DIM))
+        dummy_tensor2 = tf.zeros((batch_size, LATENT_DIM))
         self.call(dummy_tensor1, dummy_tensor2, training=False)
 
     def call(self, x_input, z_input, training=False):
@@ -135,10 +136,9 @@ class DiscriminatorXZ(tf.keras.Model):
         z = self.Dz_dropout(z, training=training)
 
         # D(x,z)
-        y = tf.concat([x, z], axis=1)
-
+        y = self.Dxz_concat([x, z])
         y = self.Dxz_dense1(y)
-        y = self.Dxz_leakyRelu(y)
+        y = self.Dxz_leakyRelu1(y)
         y = self.Dxz_dropout1(y, training=training)
 
         y_intermediate = y
@@ -147,11 +147,12 @@ class DiscriminatorXZ(tf.keras.Model):
         return logits, y_intermediate
 
 
-class DiscriminatorXX(tf.keras.Model):
+class DiscriminatorXX(tf.keras.Layer):
     def __init__(self, random_seed):
         super().__init__()
         kernel_initializer = GlorotNormal(seed=random_seed)
 
+        self.concat = Concatenate(axis=-1)
         self.dense1 = Dense(128, kernel_initializer=kernel_initializer)
         self.leaky_relu1 = LeakyReLU(0.2)
         self.dropout1 = Dropout(0.2)
@@ -159,7 +160,7 @@ class DiscriminatorXX(tf.keras.Model):
 
     def build(self, batch_size):
         # Call on dummy data to initialize weights
-        dummy_tensor = tf.zeros((batch_size, 121))
+        dummy_tensor = tf.zeros((batch_size, REAL_DIM))
         self.call(dummy_tensor, dummy_tensor, training=False)
 
     def call(self, x, rec_x, training=False):
@@ -178,8 +179,7 @@ class DiscriminatorXX(tf.keras.Model):
         (logits, res_intermediate) : (tensor, tensor)
         """
 
-        res = tf.concat([x, rec_x], axis=1)
-
+        res = self.concat([x, rec_x])
         res = self.dense1(res)
         res = self.leaky_relu1(res)
         res = self.dropout1(res, training=training)
@@ -190,11 +190,12 @@ class DiscriminatorXX(tf.keras.Model):
         return logits, res_intermediate
 
 
-class DiscriminatorZZ(tf.keras.Model):
+class DiscriminatorZZ(tf.keras.Layer):
     def __init__(self, random_seed):
         super().__init__()
         kernel_initializer = GlorotNormal(seed=random_seed)
 
+        self.concat = Concatenate(axis=-1)
         self.dense1 = Dense(32, kernel_initializer=kernel_initializer)
         self.leaky_relu1 = LeakyReLU(0.2)
         self.dropout1 = Dropout(0.2)
@@ -202,7 +203,7 @@ class DiscriminatorZZ(tf.keras.Model):
 
     def build(self, batch_size):
         # Call on dummy data to initialize weights
-        dummy_tensor = tf.zeros((batch_size, 32))
+        dummy_tensor = tf.zeros((batch_size, LATENT_DIM))
         self.call(dummy_tensor, dummy_tensor, training=False)
 
     def call(self, z, rec_z, training=False):
@@ -218,16 +219,15 @@ class DiscriminatorZZ(tf.keras.Model):
 
         Returns
         -------
-        (logits, res_intermediate) : (tensor, tensor)
+        (logits, net_intermediate) : (tensor, tensor)
         """
 
-        res = tf.concat([z, rec_z], axis=1)
+        net = self.concat([z, rec_z])
+        net = self.dense1(net)
+        net = self.leaky_relu1(net)
+        net = self.dropout1(net, training=training)
 
-        res = self.dense1(res)
-        res = self.leaky_relu1(res)
-        res = self.dropout1(res, training=training)
+        net_intermediate = net
+        logits = self.dense2(net)
 
-        res_intermediate = res
-        logits = self.dense2(res)
-
-        return logits, res_intermediate
+        return logits, net_intermediate

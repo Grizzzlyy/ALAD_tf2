@@ -1,4 +1,5 @@
 import random
+import sys
 import time
 import importlib
 import os
@@ -7,21 +8,19 @@ import tensorflow as tf
 import numpy as np
 from sklearn import metrics
 from tensorflow.keras.utils import plot_model
+from tqdm import tqdm
+import pandas as pd
 
 from alad.eval import score_ch, score_fm, score_l1, score_l2
-from alad.utils import batch_fill, create_results_dir
+from alad.utils import batch_fill, create_results_dir, create_logger
 
 
 # TODO add display_parameters
-# TODO add tqdm
 # TODO early stopping
 # TODO try glorot_uniform (default) instead of GlorotNormal
-# TODO logger
 # TODO checkpoint
 # TODO batch_fill looks dirty
-
-
-# TODO move allow_zz to train section
+# TODO continue training
 
 
 class ALAD:
@@ -38,6 +37,8 @@ class ALAD:
         batch_size : int
             Required to build models
         """
+
+        # Module with encoder, generator, discriminators and some hyperparameters for this dataset
         models = importlib.import_module(f"alad.{dataset}_utils")
 
         # Hyperparameters
@@ -46,9 +47,12 @@ class ALAD:
         self.allow_zz = allow_zz
         self.ema_decay = 0.999
         self.batch_size = batch_size
+        self.learning_rate = models.LEARNING_RATE
 
         # Create results directory
         self.results_dir = create_results_dir(dataset=dataset, allow_zz=allow_zz, random_seed=random_seed)
+        # Create logger
+        self.logger = create_logger(dataset, allow_zz, random_seed)
 
         # Models
         self.gen = models.Generator(random_seed)
@@ -65,11 +69,11 @@ class ALAD:
         self.dis_zz.build(batch_size=batch_size)
 
         # Optimizers
-        self.optimizer_gen = None
-        self.optimizer_enc = None
-        self.optimizer_dis_xz = None
-        self.optimizer_dis_xx = None
-        self.optimizer_dis_zz = None
+        self.optimizer_gen = tf.keras.optimizers.Adam(learning_rate=self.learning_rate, beta_1=0.5)
+        self.optimizer_enc = tf.keras.optimizers.Adam(learning_rate=self.learning_rate, beta_1=0.5)
+        self.optimizer_dis_xz = tf.keras.optimizers.Adam(learning_rate=self.learning_rate, beta_1=0.5)
+        self.optimizer_dis_xx = tf.keras.optimizers.Adam(learning_rate=self.learning_rate, beta_1=0.5)
+        self.optimizer_dis_zz = tf.keras.optimizers.Adam(learning_rate=self.learning_rate, beta_1=0.5)
 
         # ExponentialMovingAverage (EMA)
         self.gen_ema = tf.train.ExponentialMovingAverage(decay=self.ema_decay)
@@ -88,34 +92,63 @@ class ALAD:
         # Temporary buffer for saving actual weights when swapping them to EMA average
         self.vars_tmp = {}
 
-    def train(self, trainx, trainy, epochs: int, batch_size: int, learning_rate: float):
-        # Define optimizers
-        self.optimizer_gen = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=0.5)
-        self.optimizer_enc = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=0.5)
-        self.optimizer_dis_xz = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=0.5)
-        self.optimizer_dis_xx = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=0.5)
-        self.optimizer_dis_zz = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=0.5)
+        # Loss history
+        self.loss_hist = {"epoch": [], "gen": [], "enc": [], "dis": [], "dis_xz": [], "dis_xx": [], "dis_zz": []}
 
+        self.epochs_done = 0
+
+    def swap_vars(self):
+        """
+        Swap actual weights and EMA weights or, if it was swapped, swap back
+        """
+        if len(self.vars_tmp) == 0:
+            # Save variables
+            self.vars_tmp["gen"] = self.gen.get_weights()
+            self.vars_tmp["enc"] = self.enc.get_weights()
+            self.vars_tmp["dis_xz"] = self.dis_xz.get_weights()
+            self.vars_tmp["dis_xx"] = self.dis_xx.get_weights()
+            self.vars_tmp["dis_zz"] = self.dis_zz.get_weights()
+
+            # Load EMA averages
+            for var in self.gen.trainable_variables:
+                var.value.assign(self.gen_ema.average(var.value))
+            for var in self.enc.trainable_variables:
+                var.value.assign(self.enc_ema.average(var.value))
+            for var in self.dis_xz.trainable_variables:
+                var.value.assign(self.xz_ema.average(var.value))
+            for var in self.dis_xx.trainable_variables:
+                var.value.assign(self.xx_ema.average(var.value))
+            for var in self.dis_zz.trainable_variables:
+                var.value.assign(self.zz_ema.average(var.value))
+        else:
+            # Load saved variables
+            self.gen.set_weights(self.vars_tmp["gen"])
+            self.enc.set_weights(self.vars_tmp["enc"])
+            self.dis_xz.set_weights(self.vars_tmp["dis_xz"])
+            self.dis_xx.set_weights(self.vars_tmp["dis_xx"])
+            self.dis_zz.set_weights(self.vars_tmp["dis_zz"])
+
+            # Delete them from buffer
+            self.vars_tmp = {}
+
+    def train(self, trainx, epochs: int):
         # Shuffle dataset
         np.random.shuffle(trainx)
 
         # TODO last batch here is not processed i guess
-        n_batches = int(trainx.shape[0] / batch_size)
+        n_batches = int(trainx.shape[0] / self.batch_size)
 
         for epoch in range(epochs):
             # Epoch losses
             train_loss_dis_xz, train_loss_dis_xx, train_loss_dis_zz, train_loss_dis, \
                 train_loss_gen, train_loss_enc = [0, 0, 0, 0, 0, 0]
             start_time = time.time()
-            for step in range(n_batches):
-                # TODO remove this
-                if step % 1000 == 0:
-                    print(f"step {step}/{n_batches}")
-                idx_from = step * batch_size
-                idx_to = (step + 1) * batch_size
+            for step in tqdm(range(n_batches), desc=f"Epoch {epoch}", file=sys.stdout):
+                idx_from = step * self.batch_size
+                idx_to = (step + 1) * self.batch_size
 
                 x_batch = trainx[idx_from:idx_to]
-                z_batch = np.random.normal(size=[batch_size, self.latent_dim]).astype(np.float32)
+                z_batch = np.random.normal(size=[self.batch_size, self.latent_dim]).astype(np.float32)
 
                 ld, ldxz, ldxx, ldzz, le, lg = self.train_step(x_batch, z_batch)
 
@@ -133,10 +166,31 @@ class ALAD:
             train_loss_dis_xx /= n_batches
             train_loss_dis_zz /= n_batches
 
+            self.loss_hist["epoch"].append(epoch)
+            self.loss_hist["gen"].append(tf.get_static_value(train_loss_gen))
+            self.loss_hist["enc"].append(tf.get_static_value(train_loss_enc))
+            self.loss_hist["dis"].append(tf.get_static_value(train_loss_dis))
+            self.loss_hist["dis_xz"].append(tf.get_static_value(train_loss_dis_xz))
+            self.loss_hist["dis_xx"].append(tf.get_static_value(train_loss_dis_xx))
+            self.loss_hist["dis_zz"].append(tf.get_static_value(train_loss_dis_zz))
+
             epoch_time = time.time() - start_time
-            print(f"Epoch {epoch + 1} | time = {epoch_time}s | loss gen = {train_loss_gen:.4f} | "
-                  f"loss enc = {train_loss_enc:.4f} | loss dis = {train_loss_dis:.4f} | "
-                  f"loss dis xz = {train_loss_dis_xz:.4f} | loss dis xx = {train_loss_dis_xx:.4f} |")
+            if self.allow_zz:
+                self.logger.info(
+                    f"time = {epoch_time:.2f}s | loss gen = {train_loss_gen:.4f} | loss enc = {train_loss_enc:.4f} | "
+                    f"loss dis = {train_loss_dis:.4f} | loss dis xz = {train_loss_dis_xz:.4f} | "
+                    f"loss dis xx = {train_loss_dis_xx:.4f} | loss dis zz = {train_loss_dis_zz:.4f} |")
+            else:
+                self.logger.info(
+                    f"time = {epoch_time:.2f}s | loss gen = {train_loss_gen:.4f} | loss enc = {train_loss_enc:.4f} | "
+                    f"loss dis = {train_loss_dis:.4f} | loss dis xz = {train_loss_dis_xz:.4f} | "
+                    f"loss dis xx = {train_loss_dis_xx:.4f} |")
+
+            self.epochs_done += 1
+
+        # Save losses to csv
+        losses_df = pd.DataFrame(self.loss_hist)
+        losses_df.to_csv(os.path.join(self.results_dir, "train_loss.csv"), index=False)
 
     # TODO add this later
     @tf.function
@@ -185,6 +239,8 @@ class ALAD:
             dis_loss_zz = tf.reduce_mean(z_real_dis + z_fake_dis)
 
             loss_discriminator = dis_loss_xz + dis_loss_xx + dis_loss_zz if self.allow_zz else dis_loss_xz + dis_loss_xx
+
+        ld, ldxz, ldxx, ldzz = loss_discriminator, dis_loss_xz, dis_loss_xx, dis_loss_zz
 
         # Calculate discriminators gradients
         dis_xz_grad = tape.gradient(dis_loss_xz, self.dis_xz.trainable_variables)
@@ -267,6 +323,8 @@ class ALAD:
             loss_generator = gen_loss_xz + cycle_consistency_loss
             loss_encoder = enc_loss_xz + cycle_consistency_loss
 
+        le, lg = loss_encoder, loss_generator
+
         # Calculate encoder and generator gradients
         gen_grad = tape.gradient(loss_generator, self.gen.trainable_variables)
         enc_grad = tape.gradient(loss_encoder, self.enc.trainable_variables)
@@ -280,44 +338,9 @@ class ALAD:
         self.gen_ema.apply([var.value for var in self.gen.trainable_variables])
         self.enc_ema.apply([var.value for var in self.enc.trainable_variables])
 
-        ld, ldxz, ldxx, ldzz = loss_discriminator, dis_loss_xz, dis_loss_xx, dis_loss_zz
-        le, lg = loss_encoder, loss_generator
-
         return ld, ldxz, ldxx, ldzz, le, lg
 
-    def swap_vars(self):
-        # Swap actual weights and EMA weights or, if it was swapped, swap back
-        if len(self.vars_tmp) == 0:
-            # Save variables
-            self.vars_tmp["gen"] = self.gen.get_weights()
-            self.vars_tmp["enc"] = self.enc.get_weights()
-            self.vars_tmp["dis_xz"] = self.dis_xz.get_weights()
-            self.vars_tmp["dis_xx"] = self.dis_xx.get_weights()
-            self.vars_tmp["dis_zz"] = self.dis_zz.get_weights()
-
-            # Load EMA averages
-            for var in self.gen.trainable_variables:
-                var.value.assign(self.gen_ema.average(var.value))
-            for var in self.enc.trainable_variables:
-                var.value.assign(self.enc_ema.average(var.value))
-            for var in self.dis_xz.trainable_variables:
-                var.value.assign(self.xz_ema.average(var.value))
-            for var in self.dis_xx.trainable_variables:
-                var.value.assign(self.xx_ema.average(var.value))
-            for var in self.dis_zz.trainable_variables:
-                var.value.assign(self.zz_ema.average(var.value))
-        else:
-            # Load saved variables
-            self.gen.set_weights(self.vars_tmp["gen"])
-            self.enc.set_weights(self.vars_tmp["enc"])
-            self.dis_xz.set_weights(self.vars_tmp["dis_xz"])
-            self.dis_xx.set_weights(self.vars_tmp["dis_xx"])
-            self.dis_zz.set_weights(self.vars_tmp["dis_zz"])
-
-            # Delete them from buffer
-            self.vars_tmp = {}
-
-    def test(self, testx, testy, batch_size, degree):
+    def test(self, testx, testy, degree):
         # TODO change lists to numpy arrays
         scores_ch = []
         scores_l1 = []
@@ -325,32 +348,32 @@ class ALAD:
         scores_fm = []
         inference_time = []
 
-        nr_batches_test = int(testx.shape[0] / batch_size)
+        nr_batches_test = int(testx.shape[0] / self.batch_size)
 
         # Load EMA weights
         self.swap_vars()
 
-        for t in range(nr_batches_test):
-            ran_from = t * batch_size
-            ran_to = (t + 1) * batch_size
+        for t in tqdm(range(nr_batches_test), desc="Evaluating", file=sys.stdout):
+            ran_from = t * self.batch_size
+            ran_to = (t + 1) * self.batch_size
             x_pl = testx[ran_from:ran_to]
-            z_pl = np.random.normal(size=[batch_size, self.latent_dim]).astype(np.float32)
+            z_pl = np.random.normal(size=[self.batch_size, self.latent_dim]).astype(np.float32)
+            begin_test_time_batch = time.time()
 
             _score_ch, _score_l1, _score_l2, _score_fm = self.test_step(x_pl, z_pl, degree)
 
-            _score_ch = np.array(_score_ch).tolist()
-            _score_l1 = np.array(_score_l1).tolist()
-            _score_l2 = np.array(_score_l2).tolist()
-            _score_fm = np.array(_score_fm).tolist()
+            scores_ch += np.array(_score_ch).tolist()
+            scores_l1 += np.array(_score_l1).tolist()
+            scores_l2 += np.array(_score_l2).tolist()
+            scores_fm += np.array(_score_fm).tolist()
+            inference_time.append(time.time() - begin_test_time_batch)
 
-            scores_ch += _score_ch
-            scores_l1 += _score_l1
-            scores_l2 += _score_l2
-            scores_fm += _score_fm
-
-        if testx.shape[0] % batch_size != 0:
-            x_pl, size = batch_fill(testx, batch_size)
-            z_pl = np.random.normal(size=[batch_size, self.latent_dim]).astype(np.float32)
+        # Process last batch
+        if testx.shape[0] % self.batch_size != 0:
+            # TODO change batch_fill
+            x_pl, size = batch_fill(testx, self.batch_size)
+            z_pl = np.random.normal(size=[self.batch_size, self.latent_dim]).astype(np.float32)
+            begin_test_time_batch = time.time()
 
             _bscore_ch, _bscore_l1, _bscore_l2, _bscore_fm = self.test_step(x_pl, z_pl, degree)
 
@@ -363,67 +386,52 @@ class ALAD:
             scores_l1 += _bscore_l1[:size]
             scores_l2 += _bscore_l2[:size]
             scores_fm += _bscore_fm[:size]
+            inference_time.append(time.time() - begin_test_time_batch)
 
         # Load regular weights
         self.swap_vars()
 
-        scores_ch = np.array(scores_ch)
-        fpr, tpr, _ = metrics.roc_curve(testy, scores_ch)
-        roc_auc = metrics.auc(fpr, tpr)
-        per = np.percentile(scores_ch, 80)
-        y_pred = (scores_ch >= per)
-        precision, recall, f1, _ = metrics.precision_recall_fscore_support(testy.astype(int),
-                                                                           y_pred.astype(int),
-                                                                           average='binary')
-        print("CH:")
-        print(f"roc_auc: {roc_auc}")
-        print(f"precision: {precision}")
-        print(f"recall: {recall}")
-        print(f"f1: {f1}")
+        # Print inference time
+        inference_time = np.mean(inference_time)
+        self.logger.info(f"Mean inference time: {inference_time}")
 
-        scores_l1 = np.array(scores_l1)
-        fpr, tpr, _ = metrics.roc_curve(testy, scores_l1)
-        roc_auc = metrics.auc(fpr, tpr)
-        per = np.percentile(scores_l1, 80)
-        y_pred = (scores_l1 >= per)
-        precision, recall, f1, _ = metrics.precision_recall_fscore_support(testy.astype(int),
-                                                                           y_pred.astype(int),
-                                                                           average='binary')
-        print("L1:")
-        print(f"roc_auc: {roc_auc}")
-        print(f"precision: {precision}")
-        print(f"recall: {recall}")
-        print(f"f1: {f1}")
+        # print(f"Mean inference time: {inference_time}")
 
-        scores_l2 = np.array(scores_l2)
-        fpr, tpr, _ = metrics.roc_curve(testy, scores_l2)
-        roc_auc = metrics.auc(fpr, tpr)
-        per = np.percentile(scores_l2, 80)
-        y_pred = (scores_l2 >= per)
-        precision, recall, f1, _ = metrics.precision_recall_fscore_support(testy.astype(int),
-                                                                           y_pred.astype(int),
-                                                                           average='binary')
-        print("L2:")
-        print(f"roc_auc: {roc_auc}")
-        print(f"precision: {precision}")
-        print(f"recall: {recall}")
-        print(f"f1: {f1}")
+        def get_metrics(scores: list):
+            scores = np.array(scores)
+            fpr, tpr, _ = metrics.roc_curve(testy, scores)
+            roc_auc = metrics.auc(fpr, tpr)
+            # TODO you can change percentile here
+            per = np.percentile(scores, 80)
+            y_pred = (scores >= per)
+            precision, recall, f1, _ = metrics.precision_recall_fscore_support(testy.astype(int),
+                                                                               y_pred.astype(int),
+                                                                               average='binary')
 
-        scores_fm = np.array(scores_fm)
-        fpr, tpr, _ = metrics.roc_curve(testy, scores_fm)
-        roc_auc = metrics.auc(fpr, tpr)
-        per = np.percentile(scores_fm, 80)
-        y_pred = (scores_fm >= per)
-        precision, recall, f1, _ = metrics.precision_recall_fscore_support(testy.astype(int),
-                                                                           y_pred.astype(int),
-                                                                           average='binary')
-        print("FM:")
-        print(f"roc_auc: {roc_auc}")
-        print(f"precision: {precision}")
-        print(f"recall: {recall}")
-        print(f"f1: {f1}")
+            return {"roc_auc": roc_auc, "precision": precision, "recall": recall, "f1": f1}
 
-        return scores_ch  # TODO
+        def print_metrics(name: str, **kwargs):
+            # name - metric name, **kwargs - dict with metrics
+            self.logger.info(f"{name}:")
+            for name, value in kwargs.items():
+                self.logger.info(f"{name}: {value}")
+
+        print_metrics(name="CH", **get_metrics(scores_ch))
+        print_metrics(name="L1", **get_metrics(scores_l1))
+        print_metrics(name="L2", **get_metrics(scores_l2))
+        print_metrics(name="FM", **get_metrics(scores_fm))
+
+        metrics_ = {"epoch": [self.epochs_done] * 4, "method": ["CH", "L1", "L2", "FM"],
+                    "roc_auc": [], "precision": [], "recall": [], "f1": []}
+        for scores in [scores_ch, scores_l1, scores_l2, scores_fm]:
+            scores_metrics = get_metrics(scores)
+            metrics_["roc_auc"].append(scores_metrics["roc_auc"])
+            metrics_["precision"].append(scores_metrics["precision"])
+            metrics_["recall"].append(scores_metrics["recall"])
+            metrics_["f1"].append(scores_metrics["f1"])
+
+        metrics_df = pd.DataFrame(metrics_)
+        metrics_df.to_csv(os.path.join(self.results_dir, "metrics.csv"), index=False)
 
     # TODO add
     @tf.function
@@ -454,9 +462,8 @@ def run(args):
     trainx, trainy = dataset.get_train()
     testx, testy = dataset.get_test()
 
-    # TODO remove batch_size from train and test
-    alad = ALAD(dataset=args.dataset, random_seed=args.seed, allow_zz=args.enable_dzz, batch_size=50)
+    alad = ALAD(dataset=args.dataset, random_seed=args.seed, allow_zz=args.enable_dzz, batch_size=args.batch_size)
 
-    alad.train(trainx, trainy, args.epochs, args.batch_size, learning_rate=1e-5)
+    alad.train(trainx, args.epochs)
 
-    alad.test(testx, testy, args.batch_size, args.degree)
+    alad.test(testx, testy, args.degree)
