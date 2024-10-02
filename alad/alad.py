@@ -21,10 +21,12 @@ from alad.utils import batch_fill, create_results_dir, create_logger, print_para
 # TODO checkpoint
 # TODO batch_fill looks dirty
 # TODO continue training
+# TODO cache processed dataset
+# TODO save loss plot
 
 
 class ALAD:
-    def __init__(self, dataset_name: str, random_seed: int, allow_zz: bool, batch_size: int):
+    def __init__(self, dataset_name: str, random_seed: int, allow_zz: bool, batch_size: int, fm_degree: int):
         """
         Parameters
         ----------
@@ -48,6 +50,7 @@ class ALAD:
         self.ema_decay = 0.999
         self.batch_size = batch_size
         self.learning_rate = models_module.LEARNING_RATE
+        self.fm_degree = fm_degree
 
         # Create models
         self.models = {"gen": {"model": models_module.Generator(random_seed)},
@@ -100,7 +103,6 @@ class ALAD:
                 del self.models[model_name]["vars_tmp"]
             self.is_ema_swapped = False
         else:
-            # TODO here is
             # Save weights
             for model_name in self.models:
                 self.models[model_name]["vars_tmp"] = self.models[model_name]["model"].get_weights()
@@ -110,14 +112,26 @@ class ALAD:
                     var.value.assign(self.models[model_name]["ema"].average(var.value))
             self.is_ema_swapped = True
 
-    def train(self, trainx, epochs: int):
+    def train(self, X_train, y_train, epochs: int, early_stopping: int = 0):
         self.logger.info(f"Training epochs {0} - {epochs - 1}")
 
         # Shuffle dataset
-        np.random.shuffle(trainx)
+        np.random.shuffle(X_train)
+
+        # Create validation dataset if early stopping is enabled
+        if early_stopping > 0:
+            val_size = int(X_train.shape[0] * 0.1)
+            X_val = X_train[:val_size]
+            X_val = tf.constant(X_val, dtype=tf.float32)
+
+            # define best validation loss
+            best_val_loss = 10000000
+
+        # Convert to tensorflow tensor
+        X_train = tf.constant(X_train, dtype=tf.float32)
 
         # TODO last batch here is not processed i guess
-        n_batches = int(trainx.shape[0] / self.batch_size)
+        n_batches = int(X_train.shape[0] / self.batch_size)
 
         for epoch in range(epochs):
             # Epoch losses
@@ -130,7 +144,7 @@ class ALAD:
                 idx_from = step * self.batch_size
                 idx_to = (step + 1) * self.batch_size
 
-                x_batch = trainx[idx_from:idx_to]
+                x_batch = X_train[idx_from:idx_to]
                 z_batch = np.random.normal(size=[self.batch_size, self.latent_dim]).astype(np.float32)
 
                 ld, ldxz, ldxx, ldzz, le, lg = self.train_step(x_batch, z_batch)
@@ -162,6 +176,15 @@ class ALAD:
                     f"loss enc = {epoch_losses['enc']:.4f} | loss dis = {epoch_losses['dis']:.4f} | "
                     f"loss dis xz = {epoch_losses['dis_xz']:.4f} | loss dis xx = {epoch_losses['dis_xx']:.4f} |")
 
+            if early_stopping > 0:
+                val_loss = self.calc_val_loss(X_val)
+                self.logger.info(f"val_loss: {val_loss :.4}")
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+
+                # TODO check number of epochs without improvement
+
             self.epochs_done += 1
 
         # Save losses to csv
@@ -169,7 +192,7 @@ class ALAD:
         losses_df.to_csv(os.path.join(self.results_dir, "train_loss.csv"), index=False)
 
     # TODO add this later
-    @tf.function
+    # @tf.function
     def train_step(self, x_pl, z_pl):
 
         ### Train discriminators ###
@@ -319,7 +342,34 @@ class ALAD:
 
         return ld, ldxz, ldxx, ldzz, le, lg
 
-    def test(self, testx, testy, degree):
+    def calc_val_loss(self, X_val):
+        total_val_loss = 0
+
+        # Load EMA weights
+        self.swap_vars()
+
+        n_batches = int(X_val.shape[0] / self.batch_size)
+
+        range_ = range(0, X_val.shape[0], self.batch_size)
+        for i in tqdm(range_, desc="Validation", file=sys.stdout):
+            x_pl = X_val[i:i + self.batch_size]
+
+            val_loss = self.test_step(x_pl, validation=True)
+            total_val_loss += val_loss
+
+        total_val_loss /= n_batches
+
+        # Load regular weights
+        self.swap_vars()
+
+        # Return validation loss
+        return total_val_loss
+
+    def test(self, X, y):
+        """
+        :param X, y: input, test or validation dataset (if validation=True)
+        :return: if validation is set, then return validation loss
+        """
         # TODO change lists to numpy arrays
         scores_ch = []
         scores_l1 = []
@@ -327,19 +377,22 @@ class ALAD:
         scores_fm = []
         inference_time = []
 
-        nr_batches_test = int(testx.shape[0] / self.batch_size)
+        # Convert data to tensors
+        X = tf.constant(X, dtype=tf.float32)
 
         # Load EMA weights
         self.swap_vars()
 
-        for t in tqdm(range(nr_batches_test), desc="Evaluating", file=sys.stdout):
+        n_batches = int(X.shape[0] / self.batch_size)
+
+        for t in tqdm(range(n_batches), desc="Evaluating", file=sys.stdout):
             ran_from = t * self.batch_size
             ran_to = (t + 1) * self.batch_size
-            x_pl = testx[ran_from:ran_to]
-            z_pl = np.random.normal(size=[self.batch_size, self.latent_dim]).astype(np.float32)
+            x_pl = X[ran_from:ran_to]
+            # z_pl = np.random.normal(size=[self.batch_size, self.latent_dim]).astype(np.float32)
             begin_test_time_batch = time.time()
 
-            _score_ch, _score_l1, _score_l2, _score_fm = self.test_step(x_pl, z_pl, degree)
+            _score_ch, _score_l1, _score_l2, _score_fm = self.test_step(x_pl)
 
             scores_ch += np.array(_score_ch).tolist()
             scores_l1 += np.array(_score_l1).tolist()
@@ -348,13 +401,13 @@ class ALAD:
             inference_time.append(time.time() - begin_test_time_batch)
 
         # Process last batch
-        if testx.shape[0] % self.batch_size != 0:
+        if X.shape[0] % self.batch_size != 0:
             # TODO change batch_fill
-            x_pl, size = batch_fill(testx, self.batch_size)
-            z_pl = np.random.normal(size=[self.batch_size, self.latent_dim]).astype(np.float32)
+            x_pl, size = batch_fill(X, self.batch_size)
+            # z_pl = np.random.normal(size=[self.batch_size, self.latent_dim]).astype(np.float32)
             begin_test_time_batch = time.time()
 
-            _bscore_ch, _bscore_l1, _bscore_l2, _bscore_fm = self.test_step(x_pl, z_pl, degree)
+            _bscore_ch, _bscore_l1, _bscore_l2, _bscore_fm = self.test_step(x_pl)
 
             _bscore_ch = np.array(_bscore_ch).tolist()
             _bscore_l1 = np.array(_bscore_l1).tolist()
@@ -374,16 +427,14 @@ class ALAD:
         inference_time = np.mean(inference_time)
         self.logger.info(f"Mean inference time: {inference_time}")
 
-        # print(f"Mean inference time: {inference_time}")
-
         def get_metrics(scores: list):
             scores = np.array(scores)
-            fpr, tpr, _ = metrics.roc_curve(testy, scores)
+            fpr, tpr, _ = metrics.roc_curve(y, scores)
             roc_auc = metrics.auc(fpr, tpr)
             # TODO you can change percentile here
             per = np.percentile(scores, 80)
             y_pred = (scores >= per)
-            precision, recall, f1, _ = metrics.precision_recall_fscore_support(testy.astype(int),
+            precision, recall, f1, _ = metrics.precision_recall_fscore_support(y.astype(int),
                                                                                y_pred.astype(int),
                                                                                average='binary')
 
@@ -413,19 +464,26 @@ class ALAD:
         metrics_df.to_csv(os.path.join(self.results_dir, "metrics.csv"), index=False)
 
     # TODO add
-    @tf.function
-    def test_step(self, x_pl, z_pl, degree):
+    # @tf.function
+    def test_step(self, x_pl, validation=False):
+        """
+        :param x_pl: batch of real samples
+        :param validation: if it's validation step, then calculate only FM score
+        :return: different types of scores. For validation return validation loss
+        """
         z_gen_ema = self.models["enc"]["model"](x_pl, training=False)
         rec_x_ema = self.models["gen"]["model"](z_gen_ema, training=False)
-        # x_gen_ema = self.gen(z_pl, training=False)
 
         l_encoder_emaxx, inter_layer_inp_emaxx = self.models["dis_xx"]["model"](x_pl, x_pl, training=False)
         l_generator_emaxx, inter_layer_rct_emaxx = self.models["dis_xx"]["model"](x_pl, rec_x_ema, training=False)
 
+        _score_fm = score_fm(inter_layer_inp_emaxx, inter_layer_rct_emaxx, self.fm_degree)
+        if validation:
+            rec_error_valid = tf.reduce_mean(_score_fm)
+            return rec_error_valid
         _score_ch = score_ch(l_generator_emaxx)
         _score_l1 = score_l1(x_pl, rec_x_ema)
         _score_l2 = score_l2(x_pl, rec_x_ema)
-        _score_fm = score_fm(inter_layer_inp_emaxx, inter_layer_rct_emaxx, degree)
         return _score_ch, _score_l1, _score_l2, _score_fm
 
 
@@ -437,13 +495,18 @@ def run(args):
     tf.keras.utils.set_random_seed(args.seed)
 
     alad = ALAD(dataset_name=args.dataset_name, random_seed=args.seed, allow_zz=args.enable_dzz,
-                batch_size=args.batch_size)
+                batch_size=args.batch_size, fm_degree=args.fm_degree)
 
     # Load dataset
-    dataset = importlib.import_module(f"data.{args.dataset_name}.{args.dataset_name}")
-    trainx, trainy = dataset.get_train()
-    testx, testy = dataset.get_test()
+    dataset_module = importlib.import_module(f"data.{args.dataset_name}.{args.dataset_name}")
+    if args.dataset_name == "kdd99":
+        X_train, y_train = dataset_module.get_train()
+        X_test, y_test = dataset_module.get_test()
+    elif args.dataset_name == "cic_iot_2023":
+        X_train, X_test, X_val, y_train, y_test, y_val = dataset_module.get_train_test_val()
+    else:
+        raise ValueError
 
-    alad.train(trainx, args.epochs)
+    alad.train(X_train, y_train, args.epochs, early_stopping=args.early_stopping)
 
-    alad.test(testx, testy, args.degree)
+    alad.test(X_test, y_test)

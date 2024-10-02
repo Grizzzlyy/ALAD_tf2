@@ -127,10 +127,8 @@ def _to_xy(df, target):
         if x != target:
             result.append(x)
     dummies = df[target].copy()
-    # TODO check if dummies is still exists
     df = df.drop(columns=target)
     return df.to_numpy(dtype=np.float32), dummies.to_numpy(dtype=int).flatten()
-    # TODO END
     # return df.as_matrix(result).astype(np.float32), dummies.as_matrix().flatten().astype(int)
 
 def _col_names():
