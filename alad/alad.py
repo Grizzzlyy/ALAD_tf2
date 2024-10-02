@@ -10,9 +10,10 @@ from sklearn import metrics
 # from tensorflow.keras.utils import plot_model
 from tqdm import tqdm
 import pandas as pd
+import matplotlib.pyplot as plt
 
 from alad.eval import score_ch, score_fm, score_l1, score_l2
-from alad.utils import batch_fill, create_results_dir, create_logger, print_parameters
+from alad.alad_utils import batch_fill, create_results_dir, create_logger, print_parameters, save_plot_losses
 
 
 # TODO add display_parameters
@@ -22,7 +23,7 @@ from alad.utils import batch_fill, create_results_dir, create_logger, print_para
 # TODO batch_fill looks dirty
 # TODO continue training
 # TODO cache processed dataset
-# TODO save loss plot
+# TODO plot model
 
 
 class ALAD:
@@ -52,7 +53,7 @@ class ALAD:
         self.learning_rate = models_module.LEARNING_RATE
         self.fm_degree = fm_degree
 
-        # Create models
+        # Create dict for models (model, optimizer, EMA) and define models
         self.models = {"gen": {"model": models_module.Generator(random_seed)},
                        "enc": {"model": models_module.Encoder(random_seed)},
                        "dis_xz": {"model": models_module.DiscriminatorXZ(random_seed)},
@@ -75,20 +76,22 @@ class ALAD:
         for model_dict in self.models.values():
             model_dict["ema"].apply([var.value for var in model_dict["model"].trainable_variables])
 
-        # Create results directory
-        self.results_dir = create_results_dir(dataset=dataset_name, allow_zz=allow_zz, random_seed=random_seed)
-        # Create logger
+        # Create results directory and logger
+        self.results_dir = create_results_dir(dataset_name=dataset_name, allow_zz=allow_zz, random_seed=random_seed)
         self.logger = create_logger(dataset_name, allow_zz, random_seed)
 
         # Display parameters
         print_parameters(self.logger, **{"dataset": dataset_name, "allow_zz": allow_zz, "random_seed": random_seed,
-                                         "batch_size": batch_size})
+                                         "batch_size": batch_size, "fm_degree": fm_degree})
 
         # Loss history
         self.loss_hist = {"epoch": [], "gen": [], "enc": [], "dis": [], "dis_xz": [], "dis_xx": [], "dis_zz": []}
 
+        # Variable that indicates that real weights swapped with EMA weights
+        self.is_ema_swapped = False
+
+        # Epoch tracker
         self.epochs_done = 0
-        self.is_ema_swapped = False  # are actual weights swapped with EMA weigts
 
     def swap_vars(self):
         """
@@ -112,22 +115,30 @@ class ALAD:
                     var.value.assign(self.models[model_name]["ema"].average(var.value))
             self.is_ema_swapped = True
 
-    def train(self, X_train, y_train, epochs: int, early_stopping: int = 0):
-        self.logger.info(f"Training epochs {0} - {epochs - 1}")
+    def train(self, X_train, epochs: int, early_stopping_patience: int = 0):
+        """
+        :param X_train: input ndarray of samples with label 0
+        :param epochs:
+        :param early_stopping_patience: if 0, then early stopping is disabled
+        :return:
+        """
+        self.logger.info(f"Training epochs {0} to {epochs - 1}")
 
         # Shuffle dataset
         np.random.shuffle(X_train)
 
         # Create validation dataset if early stopping is enabled
-        if early_stopping > 0:
+        if early_stopping_patience > 0:
             val_size = int(X_train.shape[0] * 0.1)
             X_val = X_train[:val_size]
             X_val = tf.constant(X_val, dtype=tf.float32)
 
-            # define best validation loss
+            # Variables for early stopping
             best_val_loss = 10000000
+            nb_epochs_without_improvement = 0
+            self.loss_hist["val_loss"] = []
 
-        # Convert to tensorflow tensor
+        # Convert data to tensor
         X_train = tf.constant(X_train, dtype=tf.float32)
 
         # TODO last batch here is not processed i guess
@@ -140,6 +151,8 @@ class ALAD:
             #     train_loss_gen, train_loss_enc = [0, 0, 0, 0, 0, 0]
             start_time = time.time()
 
+            # TODO make more readable with range
+            # NOTE: last batch here is not processed
             for step in tqdm(range(n_batches), desc=f"Epoch {epoch}", file=sys.stdout):
                 idx_from = step * self.batch_size
                 idx_to = (step + 1) * self.batch_size
@@ -159,6 +172,7 @@ class ALAD:
             for key in epoch_losses:
                 epoch_losses[key] /= n_batches
 
+            # Write losses
             self.loss_hist["epoch"].append(epoch)
             for key in epoch_losses:
                 self.loss_hist[key].append(tf.get_static_value(epoch_losses[key]))
@@ -176,14 +190,19 @@ class ALAD:
                     f"loss enc = {epoch_losses['enc']:.4f} | loss dis = {epoch_losses['dis']:.4f} | "
                     f"loss dis xz = {epoch_losses['dis_xz']:.4f} | loss dis xx = {epoch_losses['dis_xx']:.4f} |")
 
-            if early_stopping > 0:
+            if early_stopping_patience > 0:
                 val_loss = self.calc_val_loss(X_val)
                 self.logger.info(f"val_loss: {val_loss :.4}")
+                self.loss_hist["val_loss"].append(tf.get_static_value(val_loss))
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
+                    nb_epochs_without_improvement = 0
+                else:
+                    nb_epochs_without_improvement += 1
 
-                # TODO check number of epochs without improvement
+                if nb_epochs_without_improvement == early_stopping_patience:
+                    break
 
             self.epochs_done += 1
 
@@ -191,8 +210,13 @@ class ALAD:
         losses_df = pd.DataFrame(self.loss_hist)
         losses_df.to_csv(os.path.join(self.results_dir, "train_loss.csv"), index=False)
 
+        # Plot losses
+        plot_save_path = os.path.join(self.results_dir, "train_loss.png")
+        save_plot_losses(self.loss_hist, plot_save_path)
+        plt.figure(figsize=(10, 6))
+
     # TODO add this later
-    # @tf.function
+    @tf.function
     def train_step(self, x_pl, z_pl):
 
         ### Train discriminators ###
@@ -464,7 +488,7 @@ class ALAD:
         metrics_df.to_csv(os.path.join(self.results_dir, "metrics.csv"), index=False)
 
     # TODO add
-    # @tf.function
+    @tf.function
     def test_step(self, x_pl, validation=False):
         """
         :param x_pl: batch of real samples
@@ -503,10 +527,11 @@ def run(args):
         X_train, y_train = dataset_module.get_train()
         X_test, y_test = dataset_module.get_test()
     elif args.dataset_name == "cic_iot_2023":
+        # TODO remove val dataset
         X_train, X_test, X_val, y_train, y_test, y_val = dataset_module.get_train_test_val()
     else:
         raise ValueError
 
-    alad.train(X_train, y_train, args.epochs, early_stopping=args.early_stopping)
+    alad.train(X_train, args.epochs, early_stopping_patience=args.early_stopping)
 
     alad.test(X_test, y_test)

@@ -16,7 +16,7 @@ if __name__ == '__main__':
     parser.add_argument('--enable_sm', action='store_true', help='enable TF summaries')
     parser.add_argument('--early_stopping', nargs="?", type=int, default=0, help='early stopping, number of epochs without improvement')
 
-    # ALAD
+    # ALAD-specific
     parser.add_argument('--fm_degree', nargs="?", type=int, default=1, help='degree for norm in feature matching')
     parser.add_argument('--enable_dzz', action='store_true', help='enable dzz discriminator')
 
