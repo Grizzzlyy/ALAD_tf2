@@ -43,6 +43,8 @@ class ALAD:
 
         # Module with encoder, generator, discriminators and some hyperparameters for this dataset
         models_module = importlib.import_module(f"alad.{dataset_name}_utils")
+        # Module with dataset parameters
+        dataset_module = importlib.import_module(f"data.{dataset_name}.{dataset_name}")
 
         # Hyperparameters
         self.real_dim = models_module.REAL_DIM
@@ -52,6 +54,7 @@ class ALAD:
         self.batch_size = batch_size
         self.learning_rate = models_module.LEARNING_RATE
         self.fm_degree = fm_degree
+        self.outliers_frac = dataset_module.OUTLIERS_FRAC  # How many samples will be treated as anomalies
 
         # Create dict for models (model, optimizer, EMA) and define models
         self.models = {"gen": {"model": models_module.Generator(random_seed)},
@@ -134,7 +137,7 @@ class ALAD:
             X_val = tf.constant(X_val, dtype=tf.float32)
 
             # Variables for early stopping
-            best_val_loss = 10000000
+            best_val_loss = 100000000  # Just a huge number
             nb_epochs_without_improvement = 0
             self.loss_hist["val_loss"] = []
 
@@ -151,7 +154,7 @@ class ALAD:
             #     train_loss_gen, train_loss_enc = [0, 0, 0, 0, 0, 0]
             start_time = time.time()
 
-            # TODO make more readable with range
+            # TODO make more readable with range. See calc_val_loss()
             # NOTE: last batch here is not processed
             for step in tqdm(range(n_batches), desc=f"Epoch {epoch}", file=sys.stdout):
                 idx_from = step * self.batch_size
@@ -190,6 +193,8 @@ class ALAD:
                     f"loss enc = {epoch_losses['enc']:.4f} | loss dis = {epoch_losses['dis']:.4f} | "
                     f"loss dis xz = {epoch_losses['dis_xz']:.4f} | loss dis xx = {epoch_losses['dis_xx']:.4f} |")
 
+            self.epochs_done += 1
+
             if early_stopping_patience > 0:
                 val_loss = self.calc_val_loss(X_val)
                 self.logger.info(f"val_loss: {val_loss :.4}")
@@ -202,9 +207,9 @@ class ALAD:
                     nb_epochs_without_improvement += 1
 
                 if nb_epochs_without_improvement == early_stopping_patience:
+                    self.logger.warning(
+                        f"Terminating training after {nb_epochs_without_improvement} epochs without progress in val_loss")
                     break
-
-            self.epochs_done += 1
 
         # Save losses to csv
         losses_df = pd.DataFrame(self.loss_hist)
@@ -213,7 +218,6 @@ class ALAD:
         # Plot losses
         plot_save_path = os.path.join(self.results_dir, "train_loss.png")
         save_plot_losses(self.loss_hist, plot_save_path)
-        plt.figure(figsize=(10, 6))
 
     # TODO add this later
     @tf.function
@@ -456,7 +460,7 @@ class ALAD:
             fpr, tpr, _ = metrics.roc_curve(y, scores)
             roc_auc = metrics.auc(fpr, tpr)
             # TODO you can change percentile here
-            per = np.percentile(scores, 80)
+            per = np.percentile(scores, (1 - self.outliers_frac) * 100)
             y_pred = (scores >= per)
             precision, recall, f1, _ = metrics.precision_recall_fscore_support(y.astype(int),
                                                                                y_pred.astype(int),
@@ -528,7 +532,7 @@ def run(args):
         X_test, y_test = dataset_module.get_test()
     elif args.dataset_name == "cic_iot_2023":
         # TODO remove val dataset
-        X_train, X_test, X_val, y_train, y_test, y_val = dataset_module.get_train_test_val()
+        X_train, X_test, y_train, y_test = dataset_module.get_train_test()
     else:
         raise ValueError
 

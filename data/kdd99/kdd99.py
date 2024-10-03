@@ -5,6 +5,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 
 logger = logging.getLogger(__name__)
+OUTLIERS_FRAC = 0.2
 
 def get_train(label=0, scale=False, *args):
     """Get training dataset for KDD 10 percent"""

@@ -26,7 +26,7 @@ def create_logger(dataset_name: str, allow_zz: bool, random_seed: int):
                         format='%(asctime)s %(name)s %(levelname)-8s %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S',
                         filename=f"results/{dataset_name}/alad_dzz{allow_zz}/seed_{random_seed}/log.log",
-                        filemode='a')
+                        filemode='w')
 
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)

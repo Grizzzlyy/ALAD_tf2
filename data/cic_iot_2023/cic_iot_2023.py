@@ -3,12 +3,14 @@ from sklearn.preprocessing import MinMaxScaler
 import numpy as np
 
 DATASET_PATH = "C:/ml_data/cic_iot_2023/cic_iot_2023_dos_benign_100000.csv"
+OUTLIERS_FRAC = 0.12  # Fraction of outliers in test set
 
 
 def _to_xy(df):
     y = df["label"]
     X = df.drop("label", axis=1)
     return X, y
+
 
 def _one_hot_encode(df, col_name):
     dummies = pd.get_dummies(df.loc[:, col_name])
@@ -18,7 +20,26 @@ def _one_hot_encode(df, col_name):
     df.drop(col_name, axis=1, inplace=True)
 
 
-def get_train_test_val():
+def _adapt_ratio(df_test):
+    """Adapt ratio of normal/anomalous data"""
+    inliers = df_test[df_test["label"] == 0]
+    outliers = df_test[df_test["label"] == 1]
+
+    cur_outiers_frac = outliers.shape[0] / df_test.shape[0]
+    if cur_outiers_frac > OUTLIERS_FRAC:
+        # Remove outliers
+        keep_frac = OUTLIERS_FRAC * (1 - cur_outiers_frac) / (cur_outiers_frac * (1 - OUTLIERS_FRAC))
+        outliers = outliers.sample(frac=keep_frac)
+    else:
+        # Remove inliers
+        keep_frac = (cur_outiers_frac * (1 - OUTLIERS_FRAC)) / (OUTLIERS_FRAC * (1 - cur_outiers_frac))
+        inliers = inliers.sample(frac=keep_frac)
+
+    return pd.concat([inliers, outliers], ignore_index=True)
+
+
+def get_train_test():
+    # Read dataset
     df = pd.read_csv(DATASET_PATH)
 
     # One-hot-encoding for categorical columns
@@ -35,28 +56,25 @@ def get_train_test_val():
     # Split train, test, val
     df_train = df.sample(frac=0.75, random_state=42)
     df_test = df.loc[~df.index.isin(df_train.index)]
-    df_val = df_train.sample(frac=0.1, random_state=42)  # validation is part of train
-    # df_train = df_train.loc[~df_train.index.isin(df_val.index)]
 
-    # Remove positive samples from train and val
+    # Adapt ratio of normal/anomalous samples in df_test
+    df_test = _adapt_ratio(df_test)
+
+    # Remove positive samples from train (ALAD is trained on inliers)
     df_train = df_train[df_train["label"] != 1]
-    df_val = df_val[df_val["label"] != 1]
 
     # Split to X, y
     X_train, y_train = _to_xy(df_train)
     X_test, y_test = _to_xy(df_test)
-    X_val, y_val = _to_xy(df_val)
 
     # Scale
     scaler = MinMaxScaler()
     scaler.fit(X_train)
     X_train = scaler.transform(X_train)
-    X_val = scaler.transform(X_val)
     X_test = scaler.transform(X_test)
 
     # Convert y to numpy
     y_train = y_train.to_numpy(dtype=int)
     y_test = y_test.to_numpy(dtype=int)
-    y_val = y_val.to_numpy(dtype=int)
 
-    return X_train, X_test, X_val, y_train, y_test, y_val
+    return X_train, X_test, y_train, y_test
