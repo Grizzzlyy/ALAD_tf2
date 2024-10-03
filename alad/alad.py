@@ -92,7 +92,7 @@ class ALAD:
         # Epoch tracker
         self.epochs_done = 0
 
-    def swap_vars(self):
+    def swap_ema_weigts(self):
         """
         Swap actual weights and EMA weights or, if it was swapped, swap back
         """
@@ -195,12 +195,23 @@ class ALAD:
                     # TODO remember best models, to later recover them after early stop
                     best_val_loss = val_loss
                     nb_epochs_without_improvement = 0
+
+                    # Save best weights
+                    for model_name in self.models:
+                        self.models[model_name]["best_weights"] = self.models[model_name]["model"].get_weights()
                 else:
                     nb_epochs_without_improvement += 1
 
                 if nb_epochs_without_improvement == early_stopping_patience:
                     self.logger.warning(
                         f"Terminating training after {nb_epochs_without_improvement} epochs without progress in val_loss")
+
+                    # Load best weights
+                    for model_name in self.models:
+                        self.models[model_name]["model"].set_weights(self.models[model_name]["best_weights"])
+                        del self.models[model_name]["best_weights"]
+
+                    # Stop training
                     break
 
         # Save losses to csv
@@ -366,7 +377,7 @@ class ALAD:
         total_val_loss = 0
 
         # Load EMA weights
-        self.swap_vars()
+        self.swap_ema_weigts()
 
         n_batches = int(X_val.shape[0] / self.batch_size)
 
@@ -380,7 +391,7 @@ class ALAD:
         total_val_loss /= n_batches
 
         # Load regular weights
-        self.swap_vars()
+        self.swap_ema_weigts()
 
         # Return validation loss
         return total_val_loss
@@ -400,7 +411,7 @@ class ALAD:
         X_test = tf.constant(X_test, dtype=tf.float32)
 
         # Load EMA weights
-        self.swap_vars()
+        self.swap_ema_weigts()
 
         range_ = range(0, X_test.shape[0] - self.batch_size, self.batch_size)
         for i in tqdm(range_, desc="Evaluating", file=sys.stdout):
@@ -438,7 +449,7 @@ class ALAD:
             inference_time.append(time.time() - begin_test_time_batch)
 
         # Load regular weights
-        self.swap_vars()
+        self.swap_ema_weigts()
 
         # Print inference time
         inference_time = np.mean(inference_time)
@@ -520,7 +531,6 @@ def run(args):
         X_train, y_train = dataset_module.get_train()
         X_test, y_test = dataset_module.get_test()
     elif args.dataset_name == "cic_iot_2023":
-        # TODO remove val dataset
         X_train, X_test, y_train, y_test = dataset_module.get_train_test()
     else:
         raise ValueError

@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 results/
+venv/
 
 notebooks/.ipynb_checkpoints
 notebooks/venv

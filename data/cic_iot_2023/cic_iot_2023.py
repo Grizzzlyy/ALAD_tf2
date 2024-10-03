@@ -2,7 +2,7 @@ import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 import numpy as np
 
-DATASET_PATH = "C:/ml_data/cic_iot_2023/cic_iot_2023_dos_benign_100000.csv"
+DATASET_PATH = "C:/ml_data/cic_iot_2023/cic_iot_2023_dos_benign_300000.csv"
 OUTLIERS_FRAC = 0.12  # Fraction of outliers in test set
 
 

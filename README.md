@@ -1,3 +1,6 @@
+## Description
+ALAD implementation with tensorflow 2.
+
 Key changes:
 - Doesn't support GPU usage
 - Doesn't support images datasets

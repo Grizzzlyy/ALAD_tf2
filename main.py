@@ -13,7 +13,6 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', nargs="?", type=int, default=0, help='number of epochs you want to train the dataset on')
     parser.add_argument('--batch_size', nargs="?", type=int, default=64, help='batch size')
     parser.add_argument('--seed', nargs="?", type=int, default=42, help='random_seed')
-    parser.add_argument('--enable_sm', action='store_true', help='enable TF summaries')
     parser.add_argument('--early_stopping', nargs="?", type=int, default=0, help='early stopping, number of epochs without improvement')
 
     # ALAD-specific
