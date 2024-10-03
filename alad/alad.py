@@ -13,16 +13,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from alad.eval import score_ch, score_fm, score_l1, score_l2
-from alad.alad_utils import batch_fill, create_results_dir, create_logger, print_parameters, save_plot_losses
+from alad.alad_utils import create_results_dir, create_logger, print_parameters, save_plot_losses
 
 
-# TODO add display_parameters
-# TODO early stopping
 # TODO try glorot_uniform (default) instead of GlorotNormal
 # TODO checkpoint
-# TODO batch_fill looks dirty
 # TODO continue training
-# TODO cache processed dataset
 # TODO plot model
 
 
@@ -137,30 +133,25 @@ class ALAD:
             X_val = tf.constant(X_val, dtype=tf.float32)
 
             # Variables for early stopping
-            best_val_loss = 100000000  # Just a huge number
+            best_val_loss = 100000000  # just a huge number
             nb_epochs_without_improvement = 0
             self.loss_hist["val_loss"] = []
 
         # Convert data to tensor
         X_train = tf.constant(X_train, dtype=tf.float32)
 
-        # TODO last batch here is not processed i guess
         n_batches = int(X_train.shape[0] / self.batch_size)
 
         for epoch in range(epochs):
             # Epoch losses
             epoch_losses = {"gen": 0, "enc": 0, "dis": 0, "dis_xz": 0, "dis_xx": 0, "dis_zz": 0}
-            # train_loss_dis_xz, train_loss_dis_xx, train_loss_dis_zz, train_loss_dis, \
-            #     train_loss_gen, train_loss_enc = [0, 0, 0, 0, 0, 0]
+
             start_time = time.time()
 
-            # TODO make more readable with range. See calc_val_loss()
             # NOTE: last batch here is not processed
-            for step in tqdm(range(n_batches), desc=f"Epoch {epoch}", file=sys.stdout):
-                idx_from = step * self.batch_size
-                idx_to = (step + 1) * self.batch_size
-
-                x_batch = X_train[idx_from:idx_to]
+            range_ = range(0, X_train.shape[0] - self.batch_size, self.batch_size)
+            for i in tqdm(range_, desc=f"Epoch {epoch}", file=sys.stdout):
+                x_batch = X_train[i:i + self.batch_size]
                 z_batch = np.random.normal(size=[self.batch_size, self.latent_dim]).astype(np.float32)
 
                 ld, ldxz, ldxx, ldzz, le, lg = self.train_step(x_batch, z_batch)
@@ -201,6 +192,7 @@ class ALAD:
                 self.loss_hist["val_loss"].append(tf.get_static_value(val_loss))
 
                 if val_loss < best_val_loss:
+                    # TODO remember best models, to later recover them after early stop
                     best_val_loss = val_loss
                     nb_epochs_without_improvement = 0
                 else:
@@ -378,7 +370,7 @@ class ALAD:
 
         n_batches = int(X_val.shape[0] / self.batch_size)
 
-        range_ = range(0, X_val.shape[0], self.batch_size)
+        range_ = range(0, X_val.shape[0] - self.batch_size, self.batch_size)
         for i in tqdm(range_, desc="Validation", file=sys.stdout):
             x_pl = X_val[i:i + self.batch_size]
 
@@ -393,12 +385,11 @@ class ALAD:
         # Return validation loss
         return total_val_loss
 
-    def test(self, X, y):
+    def test(self, X_test, y_test):
         """
-        :param X, y: input, test or validation dataset (if validation=True)
+        :param X_test, y_test: input, test or validation dataset (if validation=True)
         :return: if validation is set, then return validation loss
         """
-        # TODO change lists to numpy arrays
         scores_ch = []
         scores_l1 = []
         scores_l2 = []
@@ -406,18 +397,14 @@ class ALAD:
         inference_time = []
 
         # Convert data to tensors
-        X = tf.constant(X, dtype=tf.float32)
+        X_test = tf.constant(X_test, dtype=tf.float32)
 
         # Load EMA weights
         self.swap_vars()
 
-        n_batches = int(X.shape[0] / self.batch_size)
-
-        for t in tqdm(range(n_batches), desc="Evaluating", file=sys.stdout):
-            ran_from = t * self.batch_size
-            ran_to = (t + 1) * self.batch_size
-            x_pl = X[ran_from:ran_to]
-            # z_pl = np.random.normal(size=[self.batch_size, self.latent_dim]).astype(np.float32)
+        range_ = range(0, X_test.shape[0] - self.batch_size, self.batch_size)
+        for i in tqdm(range_, desc="Evaluating", file=sys.stdout):
+            x_pl = X_test[i:i + self.batch_size]
             begin_test_time_batch = time.time()
 
             _score_ch, _score_l1, _score_l2, _score_fm = self.test_step(x_pl)
@@ -429,10 +416,12 @@ class ALAD:
             inference_time.append(time.time() - begin_test_time_batch)
 
         # Process last batch
-        if X.shape[0] % self.batch_size != 0:
-            # TODO change batch_fill
-            x_pl, size = batch_fill(X, self.batch_size)
-            # z_pl = np.random.normal(size=[self.batch_size, self.latent_dim]).astype(np.float32)
+        last_batch_size = X_test.shape[0] % self.batch_size
+        if last_batch_size != 0:
+            x_pl = X_test[-last_batch_size:]
+            fill = tf.ones(shape=(self.batch_size - last_batch_size, x_pl.shape[1]))
+            x_pl = tf.concat([x_pl, fill], axis=0)
+
             begin_test_time_batch = time.time()
 
             _bscore_ch, _bscore_l1, _bscore_l2, _bscore_fm = self.test_step(x_pl)
@@ -442,10 +431,10 @@ class ALAD:
             _bscore_l2 = np.array(_bscore_l2).tolist()
             _bscore_fm = np.array(_bscore_fm).tolist()
 
-            scores_ch += _bscore_ch[:size]
-            scores_l1 += _bscore_l1[:size]
-            scores_l2 += _bscore_l2[:size]
-            scores_fm += _bscore_fm[:size]
+            scores_ch += _bscore_ch[:last_batch_size]
+            scores_l1 += _bscore_l1[:last_batch_size]
+            scores_l2 += _bscore_l2[:last_batch_size]
+            scores_fm += _bscore_fm[:last_batch_size]
             inference_time.append(time.time() - begin_test_time_batch)
 
         # Load regular weights
@@ -457,12 +446,12 @@ class ALAD:
 
         def get_metrics(scores: list):
             scores = np.array(scores)
-            fpr, tpr, _ = metrics.roc_curve(y, scores)
+            fpr, tpr, _ = metrics.roc_curve(y_test, scores)
             roc_auc = metrics.auc(fpr, tpr)
             # TODO you can change percentile here
             per = np.percentile(scores, (1 - self.outliers_frac) * 100)
             y_pred = (scores >= per)
-            precision, recall, f1, _ = metrics.precision_recall_fscore_support(y.astype(int),
+            precision, recall, f1, _ = metrics.precision_recall_fscore_support(y_test.astype(int),
                                                                                y_pred.astype(int),
                                                                                average='binary')
 

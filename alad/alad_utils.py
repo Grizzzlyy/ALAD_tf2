@@ -40,20 +40,20 @@ def create_logger(dataset_name: str, allow_zz: bool, random_seed: int):
     return logger
 
 
-def batch_fill(testx, batch_size):
-    """ Quick and dirty hack for filling smaller batch
-
-    :param testx:
-    :param batch_size:
-    :return:
-    """
-    nr_batches_test = int(testx.shape[0] / batch_size)
-    ran_from = nr_batches_test * batch_size
-    ran_to = (nr_batches_test + 1) * batch_size
-    size = testx[ran_from:ran_to].shape[0]
-    new_shape = [batch_size - size] + list(testx.shape[1:])
-    fill = np.ones(new_shape).astype(np.float32)
-    return np.concatenate([testx[ran_from:ran_to], fill], axis=0), size
+# def batch_fill(testx, batch_size):
+#     """ Quick and dirty hack for filling smaller batch
+#
+#     :param testx:
+#     :param batch_size:
+#     :return:
+#     """
+#     nr_batches_test = int(testx.shape[0] / batch_size)
+#     ran_from = nr_batches_test * batch_size
+#     ran_to = (nr_batches_test + 1) * batch_size
+#     size = testx[ran_from:ran_to].shape[0]
+#     new_shape = [batch_size - size] + list(testx.shape[1:])
+#     fill = np.ones(new_shape).astype(np.float32)
+#     return np.concatenate([testx[ran_from:ran_to], fill], axis=0), size
 
 
 def save_plot_losses(loss_dict, save_path):
@@ -62,13 +62,10 @@ def save_plot_losses(loss_dict, save_path):
     """
     plt.figure(figsize=(10, 6))
 
-    plt.plot(loss_dict["epoch"], loss_dict['gen'], label='Gen')
-    plt.plot(loss_dict["epoch"], loss_dict['enc'], label='Enc')
-    plt.plot(loss_dict["epoch"], loss_dict['dis'], label='Dis')
-    plt.plot(loss_dict["epoch"], loss_dict['dis_xz'], label='DisXZ')
-    plt.plot(loss_dict["epoch"], loss_dict['dis_xx'], label='DisXX')
-    plt.plot(loss_dict["epoch"], loss_dict['dis_zz'], label='DisZZ')
-    plt.plot(loss_dict["epoch"], loss_dict['val_loss'], label='Val loss')
+
+    for k, v in loss_dict.items():
+        if k != "epoch":
+            plt.plot(loss_dict["epoch"], loss_dict[k], label=k)
 
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
