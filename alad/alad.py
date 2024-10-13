@@ -20,6 +20,7 @@ from alad.alad_utils import create_results_dir, create_logger, print_parameters,
 # TODO checkpoint
 # TODO continue training
 # TODO plot model
+# TODO write code in notebook to load data from keggle
 
 
 class ALAD:

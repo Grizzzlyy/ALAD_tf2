@@ -6,7 +6,7 @@ from alad.alad import run
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(prog='ALAD', description='Run ALAD', epilog='Text at the bottom of help')
+    parser = argparse.ArgumentParser(prog='main.py', description='Run ALAD', epilog='Text at the bottom of help')
 
     # General
     parser.add_argument('dataset_name', choices=list(os.walk("data"))[0][1], help='the name of the dataset you want to run the experiments on')
